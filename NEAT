@@ -1,0 +1,535 @@
+!apt-get install -y python-numpy python-dev cmake zlib1g-dev libjpeg-dev xvfb xorg-dev python-opengl libboost-all-dev libsdl2-dev swig
+
+!pip install gym
+
+import gym
+import numpy as np
+import pandas as pd
+import random
+import math
+
+#initialize cartpole environment
+env = gym.make('CartPole-v0')
+
+#observation will be used to determine the action after passing through the neural network
+observation = env.reset()
+
+random.seed()
+
+#the genomes will all be stored in the dataframe in the form of {keys, fitness, nodes, connects}
+genomes = pd.DataFrame()
+genomes_old = pd.DataFrame()
+
+#each node in nodes will have [h_mark, enabled, weight, bias]
+#where h_mark is the historical marker created when a new node is created
+#and shared by all nodes decended from the same node
+#this makes mating and structual comparison much easier
+#enabled is a 1 for an enabled node, 0 for a disabled node
+#weight and bias are used as is standard for neural nets
+
+#nodes = []
+
+#each connect in connects will have [h_mark, enabled, weight, bias, in_node, out_node]
+#where h_mark, enabled, weight, and bias are exactly the same as with nodes
+#in_node and out_node are the nodes which are connected by this connect
+
+#connects = []
+
+#number of generations to run for
+generations = 24
+
+#hist_marker is the cornerstone of NEAT. It increments with each new node or connection 
+#Allows comparison accross genes for mating and species division, by giving each
+#node and connection a unique marker
+hist_marker = 0
+
+#gene_key is a unique ID for each genome, used for mating, fitness testing, mutation, and management
+gene_key = 0
+
+#hyperparamiters for neuroevolution of nodes and connections
+weight_change_freq = 0.8
+weight_uniform_cf = 0.9
+
+#hyperparamiters for compatibility coefficients
+c1 = 1.0
+c2 = 1.0
+c3 = 0.4
+delta = 3.0
+
+#15 generations without improving fitness and species removed from reproduction pool
+fitness_no_improve_limit = 15
+
+#the champion of each species with more than 5 networks is copied unchanged to next generation
+champion_copy_minimum = 5
+
+#75% chance that gene disabled if disabled in either parent
+disabled_inheritance = 0.75
+
+#25% chance of offspring from pure mutation without crossover
+mutate_vs_mate = 0.25
+
+#interspecies mating rate 0.001
+intermate_rate = 0.001
+
+#new node and link addition probability
+new_node_prob = 0.03
+new_link_prob = 0.05
+
+#compatability distance function, calculated based on gene differences rather than topolgy
+def distance_function(excess_gene_total, disjoint_gene_total, weight_dif_average, greater_gene_count):
+    global c1
+    global c2
+    global c3
+    if(greater_gene_count < 20):
+        greater_gene_count = 1
+    arg1 = (c1 * excess_gene_total) / greater_gene_count
+    arg2 = (c2 * disjoint_gene_total) / greater_gene_count
+    arg3 = c3 * weight_dif_average
+    return arg1 + arg2 + arg3
+
+#check if 2 genomes belong to the same species
+def compatability(a_nodes = [], a_connects = [], b_nodes = [], b_connects = []):
+    global delta
+    E = num_excess_genes(a_nodes, a_connects, b_nodes, b_connects)
+    D = num_disjoint_genes(a_nodes, a_connects, b_nodes, b_connects)
+    W = average_weight_dif(a_nodes, a_connects, b_nodes, b_connects)
+    N = max_num_genes(a_nodes, a_connects, b_nodes, b_connects)
+    distance = distance_function(E, D, W, N)
+    return (distance < delta)
+
+#standard ReLu transfer function
+def relu(z):
+    if(z < 0):
+        return 0
+    else:
+        return z
+    
+#modified sigmoidal transfer function
+def sigmoid(z):
+    return 1 / (1 + math.e ^ (-4.9 * z))
+
+#the get_action function results in a 4 centered float, we need an action of 0 or 1
+#this could be improved, but until then this binary_activation gets the job done
+def binary_activation(z):
+    if(z > 4):
+        return 1
+    else:
+        return 0
+
+def num_excess_genes(a_nodes = [], a_connects = [], b_nodes = [], b_connects = []):
+    num_e = 0
+    highest_match = 0
+    
+    for a_node in a_nodes:
+        for b_node in b_nodes:
+            #print(a_node[0], b_node[0])
+            if (a_node[0] == b_node[0]):
+                highest_match = max(highest_match, a_node[0])
+                #print("highest_matching gene(nodes): ", highest_match)
+    for a_connect in a_connects:
+        for b_connect in b_connects:
+            #print(a_connect[0], b_connect[0])
+            if (a_connect[0] == b_connect[0]):
+                highest_match = max(highest_match, a_connect[0])
+                #print("highest_matching gene(connects): ", highest_match)
+    for a_node in a_nodes:
+        if(a_node[0] > highest_match):
+            num_e += 1
+            #print(a_node, " <-node : excess count-> ", num_e)
+    for b_node in b_nodes:    
+        if(b_node[0] > highest_match):
+            num_e += 1
+            #print(b_node, " <-node : excess count-> ", num_e)
+    for a_connect in a_connects:
+        if(a_connect[0] > highest_match):
+            num_e += 1
+            #print(a_connect, " <-node : excess count-> ", num_e)
+    for b_connect in b_connects:
+        if(b_connect[0] > highest_match):
+            num_e += 1
+            #print(b_connect, " <-node : excess count-> ", num_e)
+    return num_e
+
+def num_disjoint_genes(a_nodes = [], a_connects = [], b_nodes = [], b_connects = []):
+    num_d = 0
+    highest_match = 0
+    
+    for a_node in a_nodes:
+        for b_node in b_nodes:
+            #print(a_node[0], b_node[0])
+            if (a_node[0] == b_node[0]):
+                highest_match = max(highest_match, a_node[0])
+                #print("highest_matching gene(nodes): ", highest_match)
+    for a_connect in a_connects:
+        for b_connect in b_connects:
+            #print(a_connect[0], b_connect[0])
+            if (a_connect[0] == b_connect[0]):
+                highest_match = max(highest_match, a_connect[0])
+                #print("highest_matching gene(connects): ", highest_match)
+                
+    for a_node in a_nodes:
+        excess = True
+        for b_node in b_nodes:
+            if (a_node[0] == b_node[0]):
+                excess = False
+        if((excess) and (a_node[0] < highest_match)):
+            print(a_node[0], " <-disjoint node")
+            num_d += 1
+    for a_connect in a_connects:
+        excess = True
+        for b_connect in b_connects:
+            if (a_connect[0] == b_connect[0]):
+                excess = False
+        if((excess) and (a_node[0] < highest_match)):
+            print(a_connect[0], "<-disjoint connection")
+            num_d += 1
+    for b_node in b_nodes:
+        excess = True
+        for a_node in a_nodes:
+            if (a_node[0] == b_node[0]):
+                excess = False
+        if((excess) and (b_node[0] < highest_match)):
+            print(b_node[0], " <-disjoint node")
+            num_d += 1
+    for b_connect in b_connects:
+        excess = True
+        for a_connect in a_connects:
+            if (a_connect[0] == b_connect[0]):
+                excess = False
+        if((excess) and (b_node[0] < highest_match)):
+            print(b_connect[0], "<-disjoint connection")
+            num_d += 1
+    return num_d
+
+def average_weight_dif(a_nodes = [], a_connects = [], b_nodes = [], b_connects = []):
+    match_count = 0
+    weight_dif_sum = 0
+    bias_dif_sum = 0
+    for a_node in a_nodes:
+        for b_node in b_nodes:
+            if(a_node[0] == b_node[0]):
+                match_count += 1
+                weight_dif_sum += b_node[2] - a_node[2]
+                bias_dif_sum = b_node[3] - a_node[3]
+    for a_connect in a_connects:
+        for b_connect in b_connects:
+            if(a_connect[0] == b_connect[0]):
+                match_count += 1
+                weight_dif_sum += b_connect[2] - a_connect[2]
+                bias_dif_sum = b_connect[3] - a_connect[3]
+    ave_dif = (weight_dif_sum + bias_dif_sum)/ (2 * match_count)
+    return ave_dif
+
+def max_num_genes(a_nodes = [], a_connects = [], b_nodes = [], b_connects = []):
+    return max(len(a_nodes) + len(a_connects), len(b_nodes) + len(b_connects))
+
+
+#creates a new connection between in_node and out_node, initializes the weight and bias
+#defaults enabled to 1(True) grants it a unique hist_marker and increments the hist_marker
+#then it returns the set as a python array
+def new_connect(in_node, out_node, init = False, i_ = 0):
+    weight = 1
+    bias = 1
+    enabled = 1
+    global hist_marker
+    h_mark = hist_marker
+    if(init and (hist_marker < 9)):#PROBLEM multiple genes with hist_mark = 8
+        hist_marker += 1
+    elif(init):
+        h_mark = i_
+    elif(not init):
+        hist_marker += 1
+    return [h_mark, enabled, weight, bias, in_node, out_node]
+
+def new_node(init = False, i_ = 0):
+    bias = 1
+    weight = 1
+    enabled = 1
+    global hist_marker
+    h_mark = hist_marker
+    if(init and (hist_marker < 6)):
+        hist_marker += 1
+    elif(init):
+        h_mark = i_
+    elif(not init):
+        hist_marker += 1
+    return [h_mark, enabled, weight, bias]
+
+def new_genome(nodes = [], connects = []):
+    nodes_ = nodes
+    connects_ = connects
+    fitness = 0
+    global gene_key
+    key = gene_key
+    gene_key += 1
+    return [key, fitness, nodes_, connects_]
+    
+
+def add_connect(nodes = [], connects = []):
+    num_ns = len(nodes)
+    if(num_ns == 5):
+        return [nodes, connects]
+    num_cs = len(connects)
+    new_c = False
+    while(not new_c):
+        a = random.randint(0, num_ns)
+        b = random.randint(5, num_ns)#change 0 to 5
+        if(b == 5):
+            b = 0
+        while(a == b):
+            b = random.randrange(num_ns)
+            if(b == 5):
+                b = 0
+        new_c = True
+        for row in connects:
+            if((row[4] == a) and (row[5] == b)):
+                new_c = False
+    #print("Connects: ", connects)
+    #print("Number of connections: ", num_cs, " Number of nodes: ", num_ns, " a: ", a, " b: ", b)
+    connects.append(new_connect(a, b))
+    #num_cs = len(connects)
+    #print("New Connects: ", connects)
+    #print("New Number of connections: ", num_cs, " Number of nodes: ", num_ns, " a: ", a, " b: ", b)
+    return [nodes, connects]
+
+def add_node(nodes = [], connects = []):
+    num_cs = len(connects)
+    h, e, w, b = new_node()
+    nodes.append([h, e, w, b])
+    cs_pick = random.randint(0, num_cs)
+    i = 0
+    for row in connects:
+        if(cs_pick == i):
+            row[1] = 0
+            connects.append(new_connect(row[4], h))
+            c_h, c_e, c_w, c_b, c_i, c_o = new_connect(h, row[5])
+            connects.append([c_h, c_e, row[3], row[4], c_i, c_o])
+        i += 1
+    return [nodes, connects]
+
+def mutate_weights(nodes = [], connects = []): #and biases
+    perturbation = random.uniform(-0.01, 0.01)
+    for node in nodes:
+        if(random.random() < weight_change_freq):#maybe move this to outside the function
+            if(random.random() < weight_uniform_cf):
+                node[2] += perturbation
+            else:
+                node[2] = random.random()
+            if(random.random() < weight_uniform_cf):
+                node[3] += perturbation
+            else:
+                node[3] = random.random()
+    for connect in connects:
+        if(random.random() < weight_change_freq):#maybe move this to outside the function
+            if(random.random() < weight_uniform_cf):
+                connect[2] += perturbation
+            else:
+                connect[2] = random.random()
+            if(random.random() < weight_uniform_cf):
+                connect[3] += perturbation
+            else:
+                connect[3] = random.random()
+    return [nodes, connects]
+                
+
+#make it work for more than the four input nodes, maybe if(curent_hist_marker in act_n) or if(current_hist_marker in act_c)
+def get_action(current_hist_marker, act_n, act_c, obs):
+    for row in act_n:
+        if(row[0] == current_hist_marker):
+            if((current_hist_marker >= 1) and (current_hist_marker <= 4)):
+                #print("running node: ", current_hist_marker)
+                return run_node(act_n[current_hist_marker][:], obs[current_hist_marker - 1])
+    #print("Running hidden node ", current_hist_marker)
+    out_ = 0
+    for c_row in act_c:
+        if((c_row[5] == current_hist_marker) and (c_row[1] == 1)):
+            new_c = []
+            for n_row in act_c:
+                if(c_row != n_row):
+                    new_c.append(n_row)
+            #print("Problem row? ", c_row)
+            out_ += get_action(c_row[4], act_n, new_c, obs)
+    return out_
+
+def run_node(ns, y):
+    if(ns[1] == 1):
+        return relu(y * ns[2] + ns[3])
+    else:
+        return y
+
+#todo: make the inheritence of enable with chance to enable/disable nodes/connections
+#todo: keep a list of inovations in the current generation to ensure that all identical inovations recieve the same historical marker
+def mate(a_nodes, a_connects, a_fitness, b_nodes, b_connects, b_fitness):
+    global hist_marker
+    #a_fitness = b_fitness#why did i ever keep this line here?
+    print("fitness a: ", a_fitness, " b: ", b_fitness)
+    nodes = []
+    connects = []
+    for i in range(hist_marker + 1):
+        in_a = False
+        in_b = False
+        for a_node in a_nodes:
+            if(a_node[0] == i):
+                in_a = True
+                for b_node in b_nodes:
+                    if(b_node[0] == i):
+                        in_b = True
+                        if(a_fitness > b_fitness):
+                            print("adding node a")
+                            nodes.append(a_node)
+                        elif(a_fitness < b_fitness):
+                            print("adding node b")
+                            nodes.append(b_node)
+                        else:
+                            print("adding node random")
+                            if(random.random() < 0.5):
+                                nodes.append(a_node)
+                            else:
+                                nodes.append(b_node)
+        if((not in_a) and (not in_b)):
+            for b_node in b_nodes:
+                if(b_node[0] == i):
+                    in_b = True
+                    nodes.append(b_node)
+        for a_connect in a_connects:
+            if(a_connect[0] == i):
+                in_a = True
+                for b_connect in b_connects:
+                    if(b_connect[0] == i):
+                        in_b = True
+                        if(a_fitness > b_fitness):
+                            print("adding connect a")
+                            connects.append(a_connect)
+                        elif(a_fitness < b_fitness):
+                            print("adding connect b")
+                            connects.append(b_connect)
+                        else:
+                            print("adding connect random")
+                            if(random.random() < 0.5):
+                                connects.append(a_connect)
+                            else:
+                                connects.append(b_connect)
+        if((not in_a) and (not in_b)):
+            for b_connect in b_connects:
+                if(b_connect[0] == i):
+                    in_b = True
+                    connects.append(b_connect)
+        k, f, n, c = new_genome(nodes, connects)
+    return [k, f, n, c]#maybe k and keys should be separate. . . They are separate
+
+#first generation initialization
+for _ in range(150):
+    nodes = []
+    connects = []
+    nodes.append(new_node(True, 0))
+    for i in range(1, 5):
+        #print(i)
+        nodes.append(new_node(True, i))
+    for i in range(1, 5):
+        #print(i)
+        connects.append(new_connect(i, 0, True, i + 4))
+    k, f, n, c = new_genome(nodes, connects)
+    #print("pre", genome_f, genome_n, genome_c)
+    genomes = genomes.append({"keys": k,
+                              "fitness": f,
+                              "nodes": n,
+                              "connects": c}, ignore_index=True)
+
+#speciation initialization
+species_count = 1
+species_rep = []
+species_rep.append(random.randrange(150))
+species_list = []
+for _ in range(150):
+    species_list.append(0)
+species_best = []
+species_best. append(0)
+species_total = []
+species_total.append(150)
+gens_since_improvement = []
+gens_since_improvement.append(0)
+best_ever = 0
+min_fit = []
+min_fit.append(200)
+
+mating = False
+
+for g in range(generations):
+    print("Working Generation: ", g)
+    genomes_old = genomes
+    best = 0
+    for i in range(species_count):
+        species_best[i] = 0
+        species_total[i] = 0
+        for j in range(150):
+            if(species_list[j] == i):#should this be species_count or i?
+                if(species_total[i] == 0):
+                    species_rep[i] = j#should be a random member, not the first, but this is acceptable
+                    species_total[i] += 1
+    for k in range(150):
+        reward = 0
+        r_total = 0
+        completes = 0
+        best = 0
+        done = False
+        for j in range(500):
+            done = False
+            while (not done):
+                action = binary_activation(get_action(0, genomes.loc[k, "nodes"], genomes.loc[k, "connects"], observation))
+                observation, r, done, _ = env.step(action)
+                reward += r
+            observation = env.reset()
+        reward /= 500    
+        #reward /= species_total[species_list[k]] #fitness sharing adjusted reward
+        genomes.loc[k, "fitness"] = reward
+        if(reward > species_best[species_list[k]]):
+            species_best[species_list[k]] = reward
+            gens_since_improvement[species_list[k]] = 0
+        else:
+            gens_since_improvement[species_list[k]] += 1
+        if(reward > best):
+            best = reward
+            if(best > best_ever):
+                best_ever = best
+                print("Best Yet Gen: ", g," Organism: ", k, " Gene Key: ", genomes.loc[k, "keys"], " Fitness: ", best_ever, "\nNodes: ", genomes.loc[k, "nodes"], "\nConnects: ", genomes.loc[k, "connects"])
+        
+    #remove the lowest performing members of each species
+    min_fit 
+    for i in range(species_count):
+        min_fit[i] = 200
+    for k in range(150):
+        if(genomes.loc[k, "fitness"] < min_fit[species_list[k]]):
+            min_fit[species_list[k]] = genomes.loc[k, "fitness"]
+    for k in range(150):
+        if(genomes.loc[k, "fitness"] == min_fit[species_list[k]]):
+            genomes.loc[k] = genomes.loc[species_rep[species_list[k]]]
+            
+    for k in range(150):
+        chosen_mate = random.randint(0, 149)
+        while(chosen_mate == k):
+            chosen_mate = random.randint(0, 149)            
+        if(gens_since_improvement[species_list[k]] < fitness_no_improve_limit):#is this really removing members who don't improve
+            if((genomes_old.loc[k, "fitness"] < species_best[species_list[k]]) or (species_total[species_list[k]] <= 5)):
+                n_, c_ = mutate_weights(genomes.loc[k, "nodes"], genomes.loc[k, "connects"])
+                genomes.at[k, "nodes"] = n_
+                genomes.at[k, "connects"] = c_
+                if(random.random() < 0.75):
+                    if(random.random() < 0.999):
+                        while((species_list[k] != species_list[chosen_mate]) or (chosen_mate == k)):
+                            chosen_mate = random.randint(0, 149)
+                    genomes.at[k, "keys"], genomes.at[k, "fitness"], genomes.at[k, "nodes"], genomes.at[k, "connects"] = mate(genomes.loc[k, "nodes"], genomes.loc[k, "connects"], genomes.loc[k, "fitness"], genomes_old.loc[chosen_mate, "nodes"], genomes_old.loc[chosen_mate, "connects"], genomes_old.loc[chosen_mate, "fitness"])
+                    if(not mating):
+                        print("Started mating. . .")
+                        mating = True
+                    compatability_check = False
+                    for i in range(species_count):
+                        if(compatability(genomes.loc[k, "nodes"], genomes.loc[k, "connects"], genomes.loc[species_rep[species_list[k]], "nodes"], genomes.loc[species_rep[species_list[k]], "connects"])):
+                            compatability_check = True#could rewrite this without the if()
+                        if(not(compatability_check)):
+                            species_count += 1
+                            gens_since_improvement.append(0)
+                            species_best.append(0)
+                            species_rep[species_count - 1] = k
+                            min_fit.append(200)
+                            
+                            
