@@ -3,11 +3,10 @@
 #make df from 'GBPUSDe.csv'
 
 #initialize Forex environment
-env = ForexEnv(df)
-#env = DummyVecEnv([lambda: ForexEnv(df)])
+env = DummyVecEnv([lambda: ForexEnv(df)])
 
 #observation will be used to determine the action after passing through the neural network
-observation = env.reset()#.squeeze()
+observation = env.reset().squeeze()
 #print('line 20: observation:', observation.shape)
 
 #the choice between mates with identical fitness will be random
@@ -28,13 +27,10 @@ genomes_old = pd.DataFrame()
 #where h_mark, enabled, weight, and bias are exactly the same as with nodes
 #in_node and out_node are the nodes which are connected by this connect
 
-#Flexible number of inputs
-#Tested with with 4 and 10 inputs
-#Should work for 30 inputs, or any other number
-num_inputs = 10
+num_inputs = 24#Changed ForexNEAT
 
 #number of generations to run for if we don't find a solution sooner
-generations = 24
+generations = 50
 
 #hist_marker is the cornerstone of NEAT. It increments with each new node or connection 
 #Allows comparison accross genes for mating and species division, by giving each
@@ -73,11 +69,6 @@ intermate_rate = 0.001
 #new node and link addition probability
 new_node_prob = 0.03
 new_link_prob = 0.05
-
-#maximum for normalization of % amount to buy/sell in step action
-#initialized to 0, will follow maximum from action function
-#there should be a better way, but this works for now
-max_amount = 0
 
 def distance_function(excess_gene_total, disjoint_gene_total, weight_dif_average, greater_gene_count):
     """
@@ -147,15 +138,6 @@ def binary_activation(z):
         return [1, z[1]]
     else:
         return [0, z[1]]
-
-def normal_activation(z):
-    global max_amount
-    if z > max_amount:
-        max_amount = z
-    if z < 0:
-        z = 0
-    z /= max_amount
-    return z
 
 def num_excess_genes(a_nodes = [], a_connects = [], b_nodes = [], b_connects = []):
     """
@@ -353,7 +335,6 @@ def mutate_weights(nodes = [], connects = []):#and biases
                 
 def get_action(act_n, act_c, obs):
     action = old_get_action(0, act_n, act_c, obs)
-    #amount = normal_activation(old_get_action(1, act_n, act_c, obs))
     amount = old_get_action(1, act_n, act_c, obs)
     return [action, amount]
 
@@ -435,7 +416,7 @@ def mate(a_nodes, a_connects, a_fitness, b_nodes, b_connects, b_fitness):
     return [k, f, n, c]
 
 #first generation initialization
-for _ in range(150):
+for _ in range(CONFIG_POPULATION_SIZE):
     nodes = []
     connects = []
     nodes.append(new_node(True, 0))
@@ -455,21 +436,21 @@ for _ in range(150):
 #speciation initialization
 species_count = 1
 species_rep = []
-species_rep.append(random.randrange(150))
+species_rep.append(random.randrange(CONFIG_POPULATION_SIZE))
 species_list = []
-for _ in range(150):
+for _ in range(CONFIG_POPULATION_SIZE):
     species_list.append(0)
 species_best = []
 species_best.append(0)
 species_improved = []
 species_improved.append(0) 
 species_total = []
-species_total.append(150)
+species_total.append(CONFIG_POPULATION_SIZE)
 gens_since_improvement = []
 gens_since_improvement.append(0)
 best_ever = 0
 min_fit = []
-min_fit.append(500)
+min_fit.append(200)
 
 mating = False
 
@@ -481,12 +462,12 @@ for g in range(generations):
         species_improved[i] = 0
         species_best[i] = 0
         species_total[i] = 0
-        for j in range(150):
+        for j in range(CONFIG_POPULATION_SIZE):
             if(species_list[j] == i):
                 if(species_total[i] == 0):
                     species_rep[i] = j#should be a random member, not the first, but this does not have a large effect
                     species_total[i] += 1
-    for k in range(150):
+    for k in range(CONFIG_POPULATION_SIZE):
         reward = 0
         r_total = 0
         completes = 0
@@ -495,47 +476,37 @@ for g in range(generations):
         steps = 0
         while (not done):
             steps += 1
-            if(steps == 999) and (k == 149):
-                render_buy = True
             action = get_action(genomes.loc[k, "nodes"], genomes.loc[k, "connects"], observation)
-            #print('observation:', observation)
-            #print('action:', action)
-            observation, reward, done, _ = env.step(action)
-            #observation = observation.squeeze()
-            if(steps == 999) or (k == 149):
-                print("Nodes: ", genomes.loc[k, "nodes"], "\nConnects: ", genomes.loc[k, "connects"])
-                print('action:', action)
-                print('reward:', reward / steps)
-                env.render()
-        observation = env.reset()#.squeeze()
-        if g > 1:
-            genomes.loc[k, "fitness"] = reward
-            if(reward > species_best[species_list[k]]):
-                species_best[species_list[k]] = reward
-                gens_since_improvement[species_list[k]] = 0
-                species_improved[species_list[k]] = 1
-            if(reward > best):
-                best = reward
-                if(best > best_ever):
-                    best_ever = best
-                    print('*' * 60)
-                    print("Best Yet Gen: ", g," Organism: ", k, " Gene Key: ", genomes.loc[k, "keys"], " Fitness: ", best_ever, "\nNodes: ", genomes.loc[k, "nodes"], "\nConnects: ", genomes.loc[k, "connects"])
-                    print('*' * 60)
-        
+            observation, r, done, _ = env.step([action])
+            observation = observation.squeeze()
+            reward += r
+        observation = env.reset().squeeze()
+        reward /= steps
+        genomes.loc[k, "fitness"] = reward
+        if(reward > species_best[species_list[k]]):
+            species_best[species_list[k]] = reward
+            gens_since_improvement[species_list[k]] = 0
+            species_improved[species_list[k]] = 1
+        if(reward > best):
+            best = reward
+            if(best > best_ever):
+                best_ever = best
+                print("Best Yet Gen: ", g," Organism: ", k, " Gene Key: ", genomes.loc[k, "keys"], " Fitness: ", best_ever, "\nNodes: ", genomes.loc[k, "nodes"], "\nConnects: ", genomes.loc[k, "connects"])
+    
     #remove the lowest performing members of each species
     for i in range(species_count):
-        min_fit[i] = 500
+        min_fit[i] = 200
         gens_since_improvement[i] += not(species_improved[i])
-    for k in range(150):
+    for k in range(CONFIG_POPULATION_SIZE):
         if(genomes.loc[k, "fitness"] < min_fit[species_list[k]]):
             min_fit[species_list[k]] = genomes.loc[k, "fitness"]
-    for k in range(150):
+    for k in range(CONFIG_POPULATION_SIZE):
         if(genomes.loc[k, "fitness"] == min_fit[species_list[k]]):
             genomes.loc[k] = genomes.loc[species_rep[species_list[k]]]
-    for k in range(150):
-        chosen_mate = random.randint(0, 149)
+    for k in range(CONFIG_POPULATION_SIZE):
+        chosen_mate = random.randint(0, CONFIG_POPULATION_SIZE - 1)
         while(chosen_mate == k):
-            chosen_mate = random.randint(0, 149)            
+            chosen_mate = random.randint(0, CONFIG_POPULATION_SIZE - 1)            
         if(gens_since_improvement[species_list[k]] < fitness_no_improve_limit):
             if((genomes_old.loc[k, "fitness"] < species_best[species_list[k]]) or (species_total[species_list[k]] <= 5)):
                 n_, c_ = mutate_weights(genomes.loc[k, "nodes"], genomes.loc[k, "connects"])
@@ -548,7 +519,7 @@ for g in range(generations):
                         genomes.at[k, "nodes"], genomes.at[k, "connects"] = add_connect(genomes.loc[k, "nodes"], genomes.loc[k, "connects"])                        
                     if(random.random() < 0.999):
                         while((species_list[k] != species_list[chosen_mate]) or (chosen_mate == k)):
-                            chosen_mate = random.randint(0, 149)
+                            chosen_mate = random.randint(0, CONFIG_POPULATION_SIZE - 1)
                     genomes.at[k, "keys"], genomes.at[k, "fitness"], genomes.at[k, "nodes"], genomes.at[k, "connects"] = mate(genomes.loc[k, "nodes"], genomes.loc[k, "connects"], genomes.loc[k, "fitness"], genomes_old.loc[chosen_mate, "nodes"], genomes_old.loc[chosen_mate, "connects"], genomes_old.loc[chosen_mate, "fitness"])
                     if(not mating):
                         print("Started mating. . .")
@@ -564,5 +535,5 @@ for g in range(generations):
                             species_best.append(0)
                             species_improved.append(0)
                             species_rep[species_count - 1] = k
-                            min_fit.append(500)
+                            min_fit.append(200)
 
