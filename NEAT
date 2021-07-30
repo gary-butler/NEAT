@@ -417,8 +417,10 @@ def mate(a_nodes, a_connects, a_fitness, b_nodes, b_connects, b_fitness):
         k, f, n, c = new_genome(nodes, connects)
     return [k, f, n, c]#maybe k and keys should be separate. . . They are separate
 
+no_of_species = 2
+
 #first generation initialization
-for _ in range(150):
+for _ in range(no_of_species):
     nodes = []
     connects = []
     nodes.append(new_node(True, 0))
@@ -438,14 +440,14 @@ for _ in range(150):
 #speciation initialization
 species_count = 1
 species_rep = []
-species_rep.append(random.randrange(150))
+species_rep.append(random.randrange(no_of_species))
 species_list = []
-for _ in range(150):
+for _ in range(no_of_species):
     species_list.append(0)
 species_best = []
 species_best. append(0)
 species_total = []
-species_total.append(150)
+species_total.append(no_of_species)
 gens_since_improvement = []
 gens_since_improvement.append(0)
 best_ever = 0
@@ -461,12 +463,12 @@ for g in range(generations):
     for i in range(species_count):
         species_best[i] = 0
         species_total[i] = 0
-        for j in range(150):
+        for j in range(no_of_species):
             if(species_list[j] == i):#should this be species_count or i?
                 if(species_total[i] == 0):
                     species_rep[i] = j#should be a random member, not the first, but this is acceptable
                     species_total[i] += 1
-    for k in range(150):
+    for k in range(no_of_species):
         reward = 0
         r_total = 0
         completes = 0
@@ -497,17 +499,17 @@ for g in range(generations):
     min_fit 
     for i in range(species_count):
         min_fit[i] = 200
-    for k in range(150):
+    for k in range(no_of_species):
         if(genomes.loc[k, "fitness"] < min_fit[species_list[k]]):
             min_fit[species_list[k]] = genomes.loc[k, "fitness"]
-    for k in range(150):
+    for k in range(no_of_species):
         if(genomes.loc[k, "fitness"] == min_fit[species_list[k]]):
             genomes.loc[k] = genomes.loc[species_rep[species_list[k]]]
             
-    for k in range(150):
-        chosen_mate = random.randint(0, 149)
+    for k in range(no_of_species):
+        chosen_mate = random.randint(0, no_of_species-1)
         while(chosen_mate == k):
-            chosen_mate = random.randint(0, 149)            
+            chosen_mate = random.randint(0, no_of_species-1)            
         if(gens_since_improvement[species_list[k]] < fitness_no_improve_limit):#is this really removing members who don't improve
             if((genomes_old.loc[k, "fitness"] < species_best[species_list[k]]) or (species_total[species_list[k]] <= 5)):
                 n_, c_ = mutate_weights(genomes.loc[k, "nodes"], genomes.loc[k, "connects"])
@@ -516,7 +518,7 @@ for g in range(generations):
                 if(random.random() < 0.75):
                     if(random.random() < 0.999):
                         while((species_list[k] != species_list[chosen_mate]) or (chosen_mate == k)):
-                            chosen_mate = random.randint(0, 149)
+                            chosen_mate = random.randint(0, no_of_species-1)
                     genomes.at[k, "keys"], genomes.at[k, "fitness"], genomes.at[k, "nodes"], genomes.at[k, "connects"] = mate(genomes.loc[k, "nodes"], genomes.loc[k, "connects"], genomes.loc[k, "fitness"], genomes_old.loc[chosen_mate, "nodes"], genomes_old.loc[chosen_mate, "connects"], genomes_old.loc[chosen_mate, "fitness"])
                     if(not mating):
                         print("Started mating. . .")
@@ -531,5 +533,3 @@ for g in range(generations):
                             species_best.append(0)
                             species_rep[species_count - 1] = k
                             min_fit.append(200)
-                            
-                            
